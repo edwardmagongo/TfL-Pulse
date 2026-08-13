@@ -121,12 +121,23 @@ tfl-pulse/
 - **Storage:** Postgres, free-tier hosted (Neon). No ORM — the schema is one table, raw `pg` with
   parameterized queries is simpler and more honest than adding Prisma/TypeORM for this scope.
 - **Scheduling:** GitHub Actions cron, polling a small curated set of 6 stations (not all of
-  London — a deliberate, documented scope choice) every ~5 minutes: King's Cross St Pancras,
-  Oxford Circus, Liverpool Street, Waterloo, Victoria, and Stratford — chosen for a mix of lines
-  and genuinely high prediction volume (King's Cross alone returned 73 predictions per poll in
-  testing), so the dedup/resolution logic gets real exercise. Configurable via a station-ID list
-  in `src/tfl-client.ts`, not hardcoded assumptions scattered through the codebase. GitHub Actions
-  cron isn't
+  London — a deliberate, documented scope choice) every ~5 minutes. Each station is the specific
+  tube-only StopPoint ID, not the multi-mode "HUB" interchange ID — verified live, since
+  `/StopPoint/{hubId}/Arrivals` returns HTTP 200 with an empty array for a hub id (confirmed
+  against HUBLST/HUBWAT/HUBVIC/HUBSRA before settling on the child tube StopPoint instead):
+
+  | Station | StopPoint ID | Predictions/poll (verified live) |
+  |---|---|---|
+  | King's Cross St Pancras | `940GZZLUKSX` | 63 |
+  | Oxford Circus | `940GZZLUOXC` | 39 |
+  | Liverpool Street | `940GZZLULVT` | 39 |
+  | Waterloo | `940GZZLUWLO` | 35 |
+  | Victoria | `940GZZLUVIC` | 34 |
+  | Stratford | `940GZZLUSTD` | 38 |
+
+  Chosen for a mix of lines and genuinely high prediction volume, so the dedup/resolution logic
+  gets real exercise. Configurable via a station-ID list in `src/tfl-client.ts`, not hardcoded
+  assumptions scattered through the codebase. GitHub Actions cron isn't
   sub-minute-precise, so this is *periodic, idempotent ingestion*, not real-time — a completely
   normal real-world pattern, most operational pipelines are scheduled rather than literally
   streaming. The proof that it actually runs is the repo's public Actions run history, not a
