@@ -196,17 +196,75 @@ not yet inserted).
   failure in `poll_runs`, no partial state. This fails loud rather than fail-open — that was a security-availability tradeoff; this is data correctness, where
   silently dropping a write is worse than a visibly failed run that retries next poll.
 
+## Correctness invariants
+
+The implementation must maintain these properties. Each is a direct consequence of the design
+above, not a new rule — restated here explicitly so the test suite has something concrete to
+verify against, rather than the design's guarantees only existing implicitly in prose.
+
+1. A failed station poll never changes prediction state.
+2. A successful station poll is applied atomically.
+3. A prediction can only transition open → resolved (never the reverse).
+4. Resolved predictions are never modified by later polls — including if a `tfl_prediction_id`
+   that was previously resolved reappears in a later poll; that's a new open row, not a reopening
+   of the old one.
+5. A single fetched prediction is matched to at most one open prediction.
+6. A single open prediction is matched to at most one fetched prediction.
+7. Reprocessing the same poll snapshot does not create duplicate logical records — matching
+   happens against currently-open DB state, not an "already processed" marker, so idempotency
+   falls out of the algorithm rather than needing separate dedup bookkeeping.
+8. `last_seen_at` always corresponds to the most recent successful observation.
+9. `resolved_at` is strictly later than `last_seen_at`.
+10. Stations are independently transactional.
+
 ## Testing
 
+Each test below is written against a specific correctness invariant, not just "does the code run" —
+listed as `[invariant #]` so the mapping is explicit rather than assumed.
+
 - **Unit tests, no network:**
-  - `normalize()` against valid and deliberately malformed fixture predictions.
-  - The identity-matching/resolution algorithm, driven by synthetic sequences of poll snapshots
-    (new → refined → resolved; the ambiguous-shared-`id` case; a station whose poll fails
-    entirely, asserting nothing resolves).
+  - `normalize()` against valid and deliberately malformed fixture predictions (a malformed
+    prediction is skipped, the rest of the batch still processes).
+  - New prediction → refined over several synthetic polls → resolved on feed silence `[3, 8, 9]`.
+  - A station whose poll fails: assert every open row for that station is byte-for-byte unchanged
+    afterward, including `last_seen_at` `[1]`.
+  - The same successful poll snapshot fed to the matcher twice: assert row count doesn't grow, only
+    `last_seen_at`/`last_seen_eta` refresh `[7]`.
+  - A previously-resolved `tfl_prediction_id` reappearing in a later poll: assert it becomes a new
+    row (`first_seen_at` = this poll), and the old resolved row is untouched `[4]`.
+  - The ambiguous-shared-`id` case (synthetic: two open rows, two fetched predictions, same id,
+    different `expectedArrival`): assert positional pairing by sorted `expectedArrival`, never a
+    many-to-one match `[5, 6]`.
+  - Resolution timestamp check: assert `resolved_at` is always strictly after the row's
+    `last_seen_at` across every resolution path exercised above `[9]`.
 - **Integration test:** `ingest()` against a real ephemeral Postgres via Testcontainers — run against the two real captured TfL fixtures (not
-  synthetic data) so the ambiguous-id disambiguation is verified against an actual instance of the
-  problem, not a hypothetical one.
+  synthetic data), asserting the transaction commits atomically and the real ambiguous-id case in
+  the fixtures resolves correctly `[2, 5, 6, 10]`.
 - No live TfL calls in any test. Deterministic, fixture-driven.
+
+## Operational metrics — measure after real deployment, not now
+
+Once the pipeline has actually been running on schedule for a meaningful stretch (a couple of
+weeks, not a single day), the README should report real numbers pulled from `poll_runs` and
+`arrival_predictions`, measured, not estimated. Not filled in at design time — there's nothing running yet to measure:
+
+```
+Stations:                 6
+Poll frequency:           ~5 min
+Predictions ingested:     — (SELECT count(*) FROM arrival_predictions)
+Prediction lifecycles:    — (distinct logical predictions, i.e. count(*) grouped to one per
+                              open->resolved journey)
+Successful polls:         — (poll_runs outcome = 'success', as a %)
+Failed polls:             — (poll_runs outcome = 'failure', as a %)
+Duplicate-ID groups:      — (% of polls where the identity rule's ambiguous case fired; worth
+                              comparing against the ~6.8% rate observed in the two-poll fixture
+                              sample used for testing, [5/73] — real production data may differ)
+Mean observations/life:   — (average number of polls a prediction was seen across before
+                              resolving, i.e. how much the dedup logic is actually doing)
+```
+
+Each of these has a real SQL query behind it, run via `scripts/report.ts` — not hand-typed into
+the README from a vague impression of how the pipeline's been performing.
 
 ## Honest limitations (for the README)
 
