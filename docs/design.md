@@ -61,6 +61,18 @@ Findings:
 This is fully deterministic and testable against the two real captured fixtures, which already
 contain a real instance of the ambiguous case.
 
+**This is a best-effort deterministic heuristic, not a claim of ground-truth identity.** When TfL
+provides multiple predictions sharing an `id`, none of the available fields (`id`, `vehicleId`,
+`naptanId`, `lineId`, `destinationNaptanId`) distinguish which specific approach is which — the
+system cannot know the true correspondence, only guess at a plausible one. Concretely: if the
+previous poll had `id=A` at 12:05 and 12:25, and this poll has `id=A` at 12:20 and 12:40, sorted
+positional matching pairs 12:05→12:20 and 12:25→12:40. That's a reasonable guess (nothing about a
+looping vehicle's schedule should reorder its own passes), but it is not verifiable from the data
+TfL exposes — the true mapping could in principle be 12:05→12:40 and 12:25→12:20, and the pipeline
+has no way to tell the difference. The design commits to the deterministic, order-preserving guess
+because *some* consistent rule is needed and this one is testable and reproducible, not because
+it's been shown to be correct.
+
 ## Resolution semantics
 
 **Resolved means feed silence, not a confirmed arrival.** TfL's public API does not expose an
@@ -210,6 +222,9 @@ verify against, rather than the design's guarantees only existing implicitly in 
    of the old one.
 5. A single fetched prediction is matched to at most one open prediction.
 6. A single open prediction is matched to at most one fetched prediction.
+   (5 and 6 guarantee the matching is structurally 1:1 — they say nothing about whether a given
+   pair is the *correct* real-world correspondence when a `tfl_prediction_id` is ambiguous within
+   a poll. See "Prediction identity" above: that part is an acknowledged best-effort heuristic.)
 7. Reprocessing the same poll snapshot does not create duplicate logical records — matching
    happens against currently-open DB state, not an "already processed" marker, so idempotency
    falls out of the algorithm rather than needing separate dedup bookkeeping.
@@ -249,22 +264,38 @@ weeks, not a single day), the README should report real numbers pulled from `pol
 `arrival_predictions`, measured, not estimated. Not filled in at design time — there's nothing running yet to measure:
 
 ```
-Stations:                 6
-Poll frequency:           ~5 min
-Predictions ingested:     — (SELECT count(*) FROM arrival_predictions)
-Prediction lifecycles:    — (distinct logical predictions, i.e. count(*) grouped to one per
-                              open->resolved journey)
-Successful polls:         — (poll_runs outcome = 'success', as a %)
-Failed polls:             — (poll_runs outcome = 'failure', as a %)
-Duplicate-ID groups:      — (% of polls where the identity rule's ambiguous case fired; worth
-                              comparing against the ~6.8% rate observed in the two-poll fixture
-                              sample used for testing, [5/73] — real production data may differ)
-Mean observations/life:   — (average number of polls a prediction was seen across before
-                              resolving, i.e. how much the dedup logic is actually doing)
+Stations:                    6
+Poll frequency:              ~5 min
+Successful polls:            — (poll_runs outcome = 'success', as a %)
+Failed polls:                — (poll_runs outcome = 'failure', as a %)
+Predictions ingested:        — (SELECT count(*) FROM arrival_predictions — one row per
+                                 first-sighting, i.e. every insert ever made)
+Prediction lifecycles:       — (distinct open->resolved journeys; same number as above unless a
+                                 previously-resolved id reappears as a new row, see invariant 4)
+Mean observations/life:      — (average number of polls a prediction was seen across before
+                                 resolving — how much the refine-in-place logic is actually doing)
 ```
 
-Each of these has a real SQL query behind it, run via `scripts/report.ts` — not hand-typed into
-the README from a vague impression of how the pipeline's been performing.
+That covers volume and reliability, but not how often the identity heuristic itself is actually
+exercised — worth measuring separately, since "the heuristic exists" and "the heuristic gets used
+constantly" are different claims:
+
+```
+Duplicate-ID groups:         — (count of station-poll snapshots where some tfl_prediction_id
+                                 appeared more than once in that poll's fetched set — i.e. how
+                                 often the ambiguous case shows up in the raw feed at all; the
+                                 two-poll fixture used in testing had 5 such predictions out of 73
+                                 in one snapshot, ~6.8% — real production data may differ)
+Ambiguous prediction pairs:  — (total count of individual positional-match decisions made inside
+                                 groups of size > 1 — finer-grained than "duplicate-ID groups"
+                                 above, since one group of 3 predictions sharing an id produces 3
+                                 uncertain pairings, not 1)
+```
+
+The full funnel, from raw feed volume down to the heuristic's actual exercise rate:
+`polls → predictions fetched → duplicate-ID groups → ambiguous prediction pairs → resolved
+prediction lifecycles`. Each stage has a real SQL query behind it, run via `scripts/report.ts` —
+not hand-typed into the README from a vague impression of how the pipeline's been performing.
 
 ## Honest limitations (for the README)
 
