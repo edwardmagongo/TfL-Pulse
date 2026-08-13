@@ -163,6 +163,8 @@ CREATE TABLE arrival_predictions (
   last_seen_at              TIMESTAMPTZ NOT NULL, -- last successful sighting; untouched at resolution
   last_seen_eta             TIMESTAMPTZ NOT NULL, -- expectedArrival as of last_seen_at
   last_seen_time_to_station INTEGER,              -- seconds, as of last_seen_at
+  observation_count         INTEGER NOT NULL DEFAULT 1, -- exact count of polls this prediction was
+                                                          -- seen in; see amendment note below
   status                    TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
   resolved_at               TIMESTAMPTZ           -- set only on transition to resolved
 );
@@ -170,18 +172,36 @@ CREATE INDEX idx_predictions_open_lookup
   ON arrival_predictions (station_naptan_id, tfl_prediction_id) WHERE status = 'open';
 
 CREATE TABLE poll_runs (
-  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  station_naptan_id TEXT NOT NULL,
-  polled_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-  outcome       TEXT NOT NULL CHECK (outcome IN ('success', 'failure')),
-  error_message TEXT,                             -- populated only when outcome = 'failure'
-  predictions_seen INTEGER                         -- populated only when outcome = 'success'
+  id                         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  station_naptan_id          TEXT NOT NULL,
+  polled_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  outcome                    TEXT NOT NULL CHECK (outcome IN ('success', 'failure')),
+  error_message              TEXT,                -- populated only when outcome = 'failure'
+  predictions_seen           INTEGER,              -- populated only when outcome = 'success'
+  duplicate_id_groups        INTEGER,              -- populated only when outcome = 'success';
+                                                     -- see amendment note below
+  ambiguous_prediction_pairs INTEGER               -- populated only when outcome = 'success';
+                                                     -- see amendment note below
 );
 ```
 
 `idx_predictions_open_lookup` is a partial index — the matching algorithm only ever needs to load
 *open* rows for a station, and resolved rows accumulate indefinitely, so indexing only the open
 subset keeps the lookup cheap as the table grows.
+
+**Amendment:**
+three columns were added beyond the schema as originally approved — `observation_count` on
+`arrival_predictions`, and `duplicate_id_groups`/`ambiguous_prediction_pairs` on `poll_runs`.
+Reason: tracing through how `scripts/report.ts` would actually compute "Mean observations/life"
+and "Duplicate-ID groups" against the original two tables, neither is really answerable from
+`first_seen_at`/`last_seen_at` alone — any attempt would mean estimating from
+duration-divided-by-poll-interval, which is exactly the kind of number this whole project exists
+to avoid presenting as measured. `observation_count` is incremented once per successful poll a
+prediction is seen in (1 on insert); `duplicate_id_groups`/`ambiguous_prediction_pairs` are
+computed once per poll by the matching algorithm itself (which already knows, at that moment,
+whether a `tfl_prediction_id` group had more than one candidate) and persisted rather than
+reconstructed after the fact from final table state, which does not reliably preserve it. All
+three are purely additive — no existing column, index, or semantics changed.
 
 ## Data flow, per poll run
 
@@ -283,8 +303,8 @@ Predictions ingested:        — (SELECT count(*) FROM arrival_predictions — o
                                  first-sighting, i.e. every insert ever made)
 Prediction lifecycles:       — (distinct open->resolved journeys; same number as above unless a
                                  previously-resolved id reappears as a new row, see invariant 4)
-Mean observations/life:      — (average number of polls a prediction was seen across before
-                                 resolving — how much the refine-in-place logic is actually doing)
+Mean observations/life:      — (avg(observation_count) FROM arrival_predictions — how much the
+                                 refine-in-place logic is actually doing)
 ```
 
 That covers volume and reliability, but not how often the identity heuristic itself is actually
@@ -292,15 +312,13 @@ exercised — worth measuring separately, since "the heuristic exists" and "the 
 constantly" are different claims:
 
 ```
-Duplicate-ID groups:         — (count of station-poll snapshots where some tfl_prediction_id
-                                 appeared more than once in that poll's fetched set — i.e. how
-                                 often the ambiguous case shows up in the raw feed at all; the
-                                 two-poll fixture used in testing had 5 such predictions out of 73
-                                 in one snapshot, ~6.8% — real production data may differ)
-Ambiguous prediction pairs:  — (total count of individual positional-match decisions made inside
-                                 groups of size > 1 — finer-grained than "duplicate-ID groups"
-                                 above, since one group of 3 predictions sharing an id produces 3
-                                 uncertain pairings, not 1)
+Duplicate-ID groups:         — (sum(duplicate_id_groups) FROM poll_runs — how often the ambiguous
+                                 case shows up in the raw feed at all; the two-poll fixture used in
+                                 testing had 5 such predictions out of 73 in one snapshot, ~6.8% —
+                                 real production data may differ)
+Ambiguous prediction pairs:  — (sum(ambiguous_prediction_pairs) FROM poll_runs — finer-grained
+                                 than "duplicate-ID groups" above, since one group of 3 predictions
+                                 sharing an id produces 3 uncertain pairings, not 1)
 ```
 
 The full funnel, from raw feed volume down to the heuristic's actual exercise rate:
