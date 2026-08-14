@@ -50,9 +50,16 @@ export async function pollStation(pool: Pool, station: Station): Promise<PollOut
       ambiguousPredictionPairs,
     };
   } catch (error) {
-    await client.query('ROLLBACK');
     const errorMessage = (error as Error).message;
-    await recordPollFailure(client, station.naptanId, errorMessage, pollTimestamp);
+    try {
+      await client.query('ROLLBACK');
+      await recordPollFailure(client, station.naptanId, errorMessage, pollTimestamp);
+    } catch (secondaryError) {
+      console.error(
+        `[tfl-pulse] ${station.naptanId}: failed to roll back/record poll failure after original error "${errorMessage}"`,
+        secondaryError,
+      );
+    }
     return { outcome: 'failure', stationNaptanId: station.naptanId, errorMessage };
   } finally {
     client.release();
