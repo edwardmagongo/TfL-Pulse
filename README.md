@@ -32,6 +32,7 @@ To run a real poll against a live database:
 
 ```bash
 export DATABASE_URL=postgres://...
+psql "$DATABASE_URL" -f src/schema.sql   # apply the schema (once, against a fresh database)
 npm run poll           # polls all 6 stations once, hits the live TfL API
 npm run report         # prints the operational metrics below, computed from real ingested data
 ```

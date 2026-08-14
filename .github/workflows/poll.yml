@@ -8,6 +8,9 @@ on:
 jobs:
   poll:
     runs-on: ubuntu-latest
+    concurrency:
+      group: poll-tfl-arrivals
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
