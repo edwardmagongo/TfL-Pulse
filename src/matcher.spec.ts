@@ -120,3 +120,26 @@ describe('computeDiff — ambiguous shared-id case (invariants 5, 6)', () => {
     expect(result.ambiguousPredictionPairs).toBe(2);
   });
 });
+
+describe('computeDiff — reappearance and determinism (invariants 3, 4, 7)', () => {
+  it('treats a fetched id with no open row as a new insert, even if it was previously resolved — the matcher never sees resolved rows at all', () => {
+    // getOpenPredictions (Task 7) only ever loads status='open' rows, so a previously-resolved
+    // tfl_prediction_id simply never appears in openRows here — this test proves the matcher's
+    // behavior in that situation is correct: it can only ever insert, never "reopen," because it
+    // has no way to know a resolved row with this id exists.
+    const result = computeDiff([], [fetched({ tflPredictionId: 'previously-resolved-id' })]);
+
+    expect(result.diff.toInsert).toEqual([fetched({ tflPredictionId: 'previously-resolved-id' })]);
+    expect(result.diff.toResolve).toEqual([]);
+  });
+
+  it('is a pure function: identical inputs produce an identical diff every time', () => {
+    const open = [openRow()];
+    const fetchedList = [fetched()];
+
+    const first = computeDiff(open, fetchedList);
+    const second = computeDiff(open, fetchedList);
+
+    expect(second).toEqual(first);
+  });
+});
