@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import { startTestDatabase, stopTestDatabase, TestDatabase } from './test-helpers/postgres';
-import { getOpenPredictions, applyDiff } from './db';
+import { getOpenPredictions, applyDiff, recordPollSuccess, recordPollFailure } from './db';
 import type { NormalizedPrediction, PredictionDiff } from './types';
 
 describe('db', () => {
@@ -124,6 +124,57 @@ describe('db', () => {
 
       const openRows = await getOpenPredictions(client, 'station-A');
       expect(openRows).toHaveLength(0);
+    });
+  });
+
+  describe('poll_runs recording', () => {
+    let db: TestDatabase;
+    let client: PoolClient;
+
+    beforeAll(async () => {
+      db = await startTestDatabase();
+    });
+
+    afterAll(async () => {
+      await stopTestDatabase(db);
+    });
+
+    beforeEach(async () => {
+      client = await db.pool.connect();
+      await client.query('TRUNCATE arrival_predictions, poll_runs');
+    });
+
+    afterEach(() => {
+      client.release();
+    });
+
+    it('recordPollSuccess writes a success row with all counts', async () => {
+      const polledAt = new Date('2026-08-09T12:30:00Z');
+      await recordPollSuccess(client, 'station-A', 42, 2, 3, polledAt);
+
+      const result = await client.query('SELECT * FROM poll_runs');
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toMatchObject({
+        station_naptan_id: 'station-A',
+        outcome: 'success',
+        predictions_seen: 42,
+        duplicate_id_groups: 2,
+        ambiguous_prediction_pairs: 3,
+        error_message: null,
+      });
+    });
+
+    it('recordPollFailure writes a failure row with the error message and null counts', async () => {
+      const polledAt = new Date('2026-08-09T12:30:00Z');
+      await recordPollFailure(client, 'station-A', 'TfL API returned HTTP 503', polledAt);
+
+      const result = await client.query('SELECT * FROM poll_runs');
+      expect(result.rows[0]).toMatchObject({
+        station_naptan_id: 'station-A',
+        outcome: 'failure',
+        error_message: 'TfL API returned HTTP 503',
+        predictions_seen: null,
+      });
     });
   });
 });

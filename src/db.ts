@@ -73,3 +73,32 @@ export async function applyDiff(
     );
   }
 }
+
+export async function recordPollSuccess(
+  client: PoolClient,
+  stationNaptanId: string,
+  predictionsSeen: number,
+  duplicateIdGroups: number,
+  ambiguousPredictionPairs: number,
+  polledAt: Date,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO poll_runs
+      (station_naptan_id, polled_at, outcome, predictions_seen, duplicate_id_groups, ambiguous_prediction_pairs)
+     VALUES ($1, $2, 'success', $3, $4, $5)`,
+    [stationNaptanId, polledAt, predictionsSeen, duplicateIdGroups, ambiguousPredictionPairs],
+  );
+}
+
+export async function recordPollFailure(
+  client: PoolClient,
+  stationNaptanId: string,
+  errorMessage: string,
+  polledAt: Date,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO poll_runs (station_naptan_id, polled_at, outcome, error_message)
+     VALUES ($1, $2, 'failure', $3)`,
+    [stationNaptanId, polledAt, errorMessage],
+  );
+}
