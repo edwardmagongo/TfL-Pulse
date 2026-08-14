@@ -4,7 +4,7 @@ A scheduled ingestion pipeline over TfL's (Transport for London) live public Arr
 a noisy stream of repeated, expiring predictions into clean, deduplicated arrival records in
 Postgres.
 
-34 automated tests, 0 failures — unit tests for the matching/resolution logic, integration tests
+36 automated tests, 0 failures — unit tests for the matching/resolution logic, integration tests
 against a real ephemeral Postgres (Testcontainers) and two real captured TfL API responses, no
 live network calls in the test suite.
 
@@ -24,7 +24,7 @@ see the spec's "Prediction identity" section for a real counterexample pulled fr
 
 ```bash
 npm install
-npm test              # 34 tests, real Postgres via Testcontainers, no live TfL calls
+npm test              # 36 tests, real Postgres via Testcontainers, no live TfL calls
 npm run type-check
 ```
 
