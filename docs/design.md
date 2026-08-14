@@ -36,15 +36,20 @@ Cross St Pancras), 15 seconds apart, 73 predictions each — committed as
 and [`fixtures/kings-cross-arrivals-poll-2.json`](../../../fixtures/kings-cross-arrivals-poll-2.json).
 Findings:
 
-- **TfL's `id` field is stable across polls in the common case.** 67 of 73 predictions in poll 1
-  had an exact `id` match in poll 2 (the other 6 had arrived/expired/were new in the interim).
-  This is empirical, not a documented TfL guarantee — the spec and code treat it as a best-effort
-  signal, not a hard invariant.
-- **`id` is not guaranteed unique within a single poll.** 5 of 73 predictions in one response
-  shared an `id` with another prediction in that *same* response — same `vehicleId`, `naptanId`,
-  `lineId`, and `destinationNaptanId` too, differing only in `expectedArrival` (about 10 minutes
-  apart). This happens on looping lines (the sample was the Circle line) where the same vehicle
-  is predicted to pass the same stop twice within the prediction horizon.
+- **TfL's `id` field is stable across polls in the common case.** Each poll has 67 unique `id`
+  values (across 73 total predictions — see the duplicate-`id` finding below); all 67 ids from
+  poll 1 reappear in poll 2 with the same occurrence count. No id fell off the feed or newly
+  appeared between these two particular polls, 15 seconds apart. This is empirical, not a
+  documented TfL guarantee — the spec and code treat it as a best-effort signal, not a hard
+  invariant. Over a longer real polling interval, ids will fall off (arrived/expired) and new
+  ones will appear; this sample pair simply didn't happen to catch one in the act.
+- **`id` is not guaranteed unique within a single poll.** 5 groups of predictions — 4 groups of 2
+  and 1 group of 3, covering 11 of the 73 predictions in each response — share an `id` with
+  another prediction in that *same* response (same 5 groups, same ids, in both polls). Within
+  each group: same `vehicleId`, `naptanId`, `lineId`, and `destinationNaptanId`, differing only in
+  `expectedArrival` (roughly 8-13 minutes apart). This happens on looping lines (the sample was the
+  Circle line) where the same vehicle is predicted to pass the same stop twice within the
+  prediction horizon.
 
 **Identity rule:**
 
@@ -314,8 +319,8 @@ constantly" are different claims:
 ```
 Duplicate-ID groups:         — (sum(duplicate_id_groups) FROM poll_runs — how often the ambiguous
                                  case shows up in the raw feed at all; the two-poll fixture used in
-                                 testing had 5 such predictions out of 73 in one snapshot, ~6.8% —
-                                 real production data may differ)
+                                 testing had 5 such groups (11 of the 73 predictions, ~15%) in each
+                                 snapshot — real production data may differ)
 Ambiguous prediction pairs:  — (sum(ambiguous_prediction_pairs) FROM poll_runs — finer-grained
                                  than "duplicate-ID groups" above, since one group of 3 predictions
                                  sharing an id produces 3 uncertain pairings, not 1)
