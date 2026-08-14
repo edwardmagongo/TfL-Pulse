@@ -26,8 +26,7 @@ double-counting anything, and without pretending "resolved" means "confirmed arr
 
 ## Prediction identity — empirically verified, not assumed
 
-This is the hardest part of the project and is specified explicitly here rather than left as an
-implementation detail, so it's specified explicitly here rather than left as an
+This is the hardest part of the project, so it's specified explicitly here rather than left as an
 implementation detail.
 
 I captured two real responses from the live TfL API (`/StopPoint/940GZZLUKSX/Arrivals`, King's
@@ -121,7 +120,7 @@ tfl-pulse/
   .github/workflows/poll.yml           # cron trigger
 ```
 
-- **Stack:** TypeScript/Node, a natural fit for a small, scheduled, I/O-bound service; no need
+- **Stack:** TypeScript/Node — a natural fit for a small, scheduled, I/O-bound service; no need
   to introduce a new language for this scope.
 - **Storage:** Postgres, free-tier hosted (Neon). No ORM — the schema is one table, raw `pg` with
   parameterized queries is simpler and more honest than adding Prisma/TypeORM for this scope.
@@ -194,10 +193,9 @@ CREATE TABLE poll_runs (
 *open* rows for a station, and resolved rows accumulate indefinitely, so indexing only the open
 subset keeps the lookup cheap as the table grows.
 
-**Amendment:**
-three columns were added beyond the schema as originally approved — `observation_count` on
-`arrival_predictions`, and `duplicate_id_groups`/`ambiguous_prediction_pairs` on `poll_runs`.
-Reason: tracing through how `scripts/report.ts` would actually compute "Mean observations/life"
+**Amendment:** three columns were added beyond the schema as originally sketched —
+`observation_count` on `arrival_predictions`, and `duplicate_id_groups`/`ambiguous_prediction_pairs`
+on `poll_runs`. Reason: tracing through how `scripts/report.ts` would actually compute "Mean observations/life"
 and "Duplicate-ID groups" against the original two tables, neither is really answerable from
 `first_seen_at`/`last_seen_at` alone — any attempt would mean estimating from
 duration-divided-by-poll-interval, which is exactly the kind of number this whole project exists
@@ -241,8 +239,8 @@ not yet inserted).
   normally. TfL has been observed to occasionally change field shapes; this keeps one bad field
   from taking down an entire poll.
 - **Database error mid-transaction:** the station's transaction rolls back entirely, logged as a
-  failure in `poll_runs`, no partial state. This fails loud rather than fail-open — that was a security-availability tradeoff; this is data correctness, where
-  silently dropping a write is worse than a visibly failed run that retries next poll.
+  failure in `poll_runs`, no partial state. This fails loud rather than fail-open — silently
+  dropping a write would be worse than a visibly failed run that retries next poll.
 
 ## Correctness invariants
 
@@ -288,16 +286,18 @@ listed as `[invariant #]` so the mapping is explicit rather than assumed.
     many-to-one match `[5, 6]`.
   - Resolution timestamp check: assert `resolved_at` is always strictly after the row's
     `last_seen_at` across every resolution path exercised above `[9]`.
-- **Integration test:** `ingest()` against a real ephemeral Postgres via Testcontainers — run against the two real captured TfL fixtures (not
-  synthetic data), asserting the transaction commits atomically and the real ambiguous-id case in
-  the fixtures resolves correctly `[2, 5, 6, 10]`.
+- **Integration test:** `ingest()` against a real ephemeral Postgres via Testcontainers, run
+  against the two real captured TfL fixtures (not synthetic data), asserting the transaction
+  commits atomically and the real ambiguous-id case in the fixtures resolves correctly
+  `[2, 5, 6, 10]`.
 - No live TfL calls in any test. Deterministic, fixture-driven.
 
 ## Operational metrics — measure after real deployment, not now
 
 Once the pipeline has actually been running on schedule for a meaningful stretch (a couple of
 weeks, not a single day), the README should report real numbers pulled from `poll_runs` and
-`arrival_predictions`, measured, not estimated. Not filled in at design time — there's nothing running yet to measure:
+`arrival_predictions` — measured, not estimated. Not filled in at design time — there's nothing
+running yet to measure:
 
 ```
 Stations:                    6
