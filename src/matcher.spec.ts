@@ -70,3 +70,53 @@ describe('computeDiff — basic 1:1 cases', () => {
     expect(result.diff.toResolve).toEqual([{ rowId: 'row-b' }]);
   });
 });
+
+describe('computeDiff — ambiguous shared-id case (invariants 5, 6)', () => {
+  it('pairs two open rows and two fetched predictions sharing an id positionally by expectedArrival', () => {
+    const openEarly = openRow({ id: 'open-early', lastSeenEta: new Date('2026-08-09T12:05:00Z') });
+    const openLate = openRow({ id: 'open-late', lastSeenEta: new Date('2026-08-09T12:25:00Z') });
+    const fetchedEarly = fetched({ expectedArrival: new Date('2026-08-09T12:20:00Z') });
+    const fetchedLate = fetched({ expectedArrival: new Date('2026-08-09T12:40:00Z') });
+
+    // Fed in scrambled order deliberately — the matcher must sort, not rely on input order.
+    const result = computeDiff([openLate, openEarly], [fetchedLate, fetchedEarly]);
+
+    expect(result.diff.toUpdate).toEqual([
+      { rowId: 'open-early', prediction: fetchedEarly },
+      { rowId: 'open-late', prediction: fetchedLate },
+    ]);
+    expect(result.diff.toInsert).toEqual([]);
+    expect(result.diff.toResolve).toEqual([]);
+  });
+
+  it('never produces a many-to-one match: a fetched prediction group of 3 against 1 open row updates one and inserts two', () => {
+    const open = openRow({ id: 'only-open' });
+    const f1 = fetched({ expectedArrival: new Date('2026-08-09T12:10:00Z') });
+    const f2 = fetched({ expectedArrival: new Date('2026-08-09T12:20:00Z') });
+    const f3 = fetched({ expectedArrival: new Date('2026-08-09T12:30:00Z') });
+
+    const result = computeDiff([open], [f3, f1, f2]);
+
+    expect(result.diff.toUpdate).toEqual([{ rowId: 'only-open', prediction: f1 }]);
+    expect(result.diff.toInsert).toEqual([f2, f3]);
+    expect(result.diff.toResolve).toEqual([]);
+    // Every fetched prediction and every open row appears in at most one bucket:
+    const totalHandled =
+      2 * result.diff.toUpdate.length + result.diff.toInsert.length + result.diff.toResolve.length;
+    expect(totalHandled).toBe(4); // Each update = 2 items (row + prediction); 2*1 + 2 + 0 = 4
+  });
+
+  it('counts duplicateIdGroups and ambiguousPredictionPairs correctly for a real ambiguous poll', () => {
+    const openEarly = openRow({ id: 'open-early', lastSeenEta: new Date('2026-08-09T12:05:00Z') });
+    const openLate = openRow({ id: 'open-late', lastSeenEta: new Date('2026-08-09T12:25:00Z') });
+    const fetchedEarly = fetched({ expectedArrival: new Date('2026-08-09T12:20:00Z') });
+    const fetchedLate = fetched({ expectedArrival: new Date('2026-08-09T12:40:00Z') });
+    const unrelated = fetched({ tflPredictionId: 'Z', expectedArrival: new Date('2026-08-09T13:00:00Z') });
+
+    const result = computeDiff([openEarly, openLate], [fetchedEarly, fetchedLate, unrelated]);
+
+    // One ambiguous group (id "A", size 2) plus one ordinary singleton group (id "Z").
+    expect(result.duplicateIdGroups).toBe(1);
+    expect(result.ambiguousPredictionPairs).toBe(2);
+  });
+});
