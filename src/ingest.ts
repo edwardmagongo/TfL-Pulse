@@ -16,6 +16,11 @@ export async function pollStation(pool: Pool, station: Station): Promise<PollOut
     const client = await pool.connect();
     try {
       await recordPollFailure(client, station.naptanId, errorMessage, pollTimestamp);
+    } catch (secondaryError) {
+      console.error(
+        `[tfl-pulse] ${station.naptanId}: failed to record poll failure after original fetch error "${errorMessage}"`,
+        secondaryError,
+      );
     } finally {
       client.release();
     }

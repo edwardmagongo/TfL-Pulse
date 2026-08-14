@@ -107,4 +107,19 @@ describe('pollStation', () => {
       errorMessage: 'primary failure: could not read open predictions',
     });
   });
+
+  it('resolves a failure outcome (rather than rejecting) when the initial fetch fails and recordPollFailure also throws (invariant 10)', async () => {
+    // Primary failure: fetchArrivals itself throws, before any transaction is opened.
+    mockFetchArrivals.mockRejectedValue(new Error('primary failure: TfL fetch failed for station station-A'));
+    // Secondary failure: recordPollFailure (called from the fetch-failure branch) also throws.
+    mockRecordPollFailure.mockRejectedValueOnce(new Error('secondary failure: could not write poll_runs'));
+
+    const outcome = await pollStation(db.pool, station);
+
+    expect(outcome).toEqual({
+      outcome: 'failure',
+      stationNaptanId: 'station-A',
+      errorMessage: 'primary failure: TfL fetch failed for station station-A',
+    });
+  });
 });
