@@ -1,0 +1,68 @@
+import type { Pool } from 'pg';
+import { fetchArrivals, STATIONS } from './tfl-client';
+import { normalize } from './normalize';
+import { computeDiff } from './matcher';
+import { getOpenPredictions, applyDiff, recordPollSuccess, recordPollFailure } from './db';
+import type { PollOutcome, Station } from './types';
+
+export async function pollStation(pool: Pool, station: Station): Promise<PollOutcome> {
+  const pollTimestamp = new Date();
+
+  let raw;
+  try {
+    raw = await fetchArrivals(station.naptanId);
+  } catch (error) {
+    const errorMessage = (error as Error).message;
+    const client = await pool.connect();
+    try {
+      await recordPollFailure(client, station.naptanId, errorMessage, pollTimestamp);
+    } finally {
+      client.release();
+    }
+    return { outcome: 'failure', stationNaptanId: station.naptanId, errorMessage };
+  }
+
+  const { normalized, skipped } = normalize(raw);
+  if (skipped > 0) {
+    console.warn(`[tfl-pulse] ${station.naptanId}: skipped ${skipped} malformed prediction(s)`);
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const openRows = await getOpenPredictions(client, station.naptanId);
+    const { diff, duplicateIdGroups, ambiguousPredictionPairs } = computeDiff(openRows, normalized);
+    await applyDiff(client, diff, pollTimestamp);
+    await recordPollSuccess(
+      client,
+      station.naptanId,
+      normalized.length,
+      duplicateIdGroups,
+      ambiguousPredictionPairs,
+      pollTimestamp,
+    );
+    await client.query('COMMIT');
+    return {
+      outcome: 'success',
+      stationNaptanId: station.naptanId,
+      predictionsSeen: normalized.length,
+      duplicateIdGroups,
+      ambiguousPredictionPairs,
+    };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    const errorMessage = (error as Error).message;
+    await recordPollFailure(client, station.naptanId, errorMessage, pollTimestamp);
+    return { outcome: 'failure', stationNaptanId: station.naptanId, errorMessage };
+  } finally {
+    client.release();
+  }
+}
+
+export async function runPollCycle(pool: Pool, stations: Station[] = STATIONS): Promise<PollOutcome[]> {
+  const outcomes: PollOutcome[] = [];
+  for (const station of stations) {
+    outcomes.push(await pollStation(pool, station));
+  }
+  return outcomes;
+}
