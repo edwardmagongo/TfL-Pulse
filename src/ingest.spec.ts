@@ -1,5 +1,5 @@
 import { startTestDatabase, stopTestDatabase, TestDatabase } from './test-helpers/postgres';
-import { pollStation } from './ingest';
+import { pollStation, runPollCycle } from './ingest';
 import * as tflClient from './tfl-client';
 import * as dbModule from './db';
 
@@ -121,5 +121,42 @@ describe('pollStation', () => {
       stationNaptanId: 'station-A',
       errorMessage: 'primary failure: TfL fetch failed for station station-A',
     });
+  });
+});
+
+describe('runPollCycle — station independence (invariant 10)', () => {
+  let db: TestDatabase;
+
+  beforeAll(async () => {
+    db = await startTestDatabase();
+  });
+
+  afterAll(async () => {
+    await stopTestDatabase(db);
+  });
+
+  beforeEach(async () => {
+    await db.pool.query('TRUNCATE arrival_predictions, poll_runs');
+    mockFetchArrivals.mockReset();
+  });
+
+  it('one station failing does not block or roll back another station\'s already-committed work', async () => {
+    const stationA = { naptanId: 'station-A', name: 'A' };
+    const stationB = { naptanId: 'station-B', name: 'B' };
+
+    mockFetchArrivals.mockImplementation(async (naptanId: string) => {
+      if (naptanId === 'station-A') {
+        return [{ id: 'p1', naptanId: 'station-A', lineId: 'circle', timeToStation: 60, expectedArrival: '2026-08-09T12:10:00Z' }];
+      }
+      throw new Error('TfL fetch failed for station station-B after 1 retry: HTTP 503');
+    });
+
+    const outcomes = await runPollCycle(db.pool, [stationA, stationB]);
+
+    expect(outcomes[0]).toMatchObject({ outcome: 'success', stationNaptanId: 'station-A' });
+    expect(outcomes[1]).toMatchObject({ outcome: 'failure', stationNaptanId: 'station-B' });
+
+    const aRows = await db.pool.query(`SELECT * FROM arrival_predictions WHERE station_naptan_id = 'station-A'`);
+    expect(aRows.rows).toHaveLength(1); // A's insert committed despite B's failure
   });
 });
