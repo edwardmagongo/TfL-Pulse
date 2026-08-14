@@ -205,6 +205,11 @@ describe('ingest against real captured TfL fixtures', () => {
 
     // No row is ever both open and resolved, and every resolved row's resolved_at is after its last_seen_at.
     const allRows = await db.pool.query('SELECT * FROM arrival_predictions');
+    // Note: these two real captured fixtures happen to have identical prediction-ID occurrence counts
+    // between poll 1 and poll 2, so no row ever resolves in this particular test. The loop below is
+    // present for defense-in-depth but currently does not exercise any iterations. Invariant 9
+    // (resolved_at strictly after last_seen_at) is independently verified by the applyDiff resolve
+    // test in src/db.spec.ts (Task 7), a real Postgres integration test.
     for (const row of allRows.rows) {
       if (row.status === 'resolved') {
         expect(new Date(row.resolved_at).getTime()).toBeGreaterThan(new Date(row.last_seen_at).getTime());
