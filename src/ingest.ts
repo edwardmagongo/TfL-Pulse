@@ -13,7 +13,16 @@ export async function pollStation(pool: Pool, station: Station): Promise<PollOut
     raw = await fetchArrivals(station.naptanId);
   } catch (error) {
     const errorMessage = (error as Error).message;
-    const client = await pool.connect();
+    let client;
+    try {
+      client = await pool.connect();
+    } catch (connectError) {
+      console.error(
+        `[tfl-pulse] ${station.naptanId}: failed to acquire a client to record poll failure after original fetch error "${errorMessage}"`,
+        connectError,
+      );
+      return { outcome: 'failure', stationNaptanId: station.naptanId, errorMessage };
+    }
     try {
       await recordPollFailure(client, station.naptanId, errorMessage, pollTimestamp);
     } catch (secondaryError) {
@@ -31,8 +40,22 @@ export async function pollStation(pool: Pool, station: Station): Promise<PollOut
   if (skipped > 0) {
     console.warn(`[tfl-pulse] ${station.naptanId}: skipped ${skipped} malformed prediction(s)`);
   }
+  // The write key must always match the read key used by getOpenPredictions(station.naptanId):
+  // override each prediction's stationNaptanId with the station we actually polled, rather than
+  // trusting TfL's per-prediction naptanId field, so a row can never be written under one key and
+  // become unreadable under another.
+  for (const prediction of normalized) {
+    prediction.stationNaptanId = station.naptanId;
+  }
 
-  const client = await pool.connect();
+  let client;
+  try {
+    client = await pool.connect();
+  } catch (connectError) {
+    const errorMessage = (connectError as Error).message;
+    console.error(`[tfl-pulse] ${station.naptanId}: failed to acquire a client for polling`, connectError);
+    return { outcome: 'failure', stationNaptanId: station.naptanId, errorMessage };
+  }
   try {
     await client.query('BEGIN');
     const openRows = await getOpenPredictions(client, station.naptanId);

@@ -124,6 +124,63 @@ describe('pollStation', () => {
       errorMessage: 'primary failure: TfL fetch failed for station station-A',
     });
   });
+
+  it('resolves a failure outcome (rather than rejecting) when pool.connect() itself rejects (invariant 10)', async () => {
+    mockFetchArrivals.mockResolvedValue([
+      { id: 'p1', naptanId: 'station-A', lineId: 'circle', timeToStation: 60, expectedArrival: '2026-08-09T12:10:00Z' },
+    ]);
+    const connectSpy = jest
+      .spyOn(db.pool, 'connect')
+      .mockImplementationOnce(() => Promise.reject(new Error('connection pool exhausted')));
+
+    try {
+      const outcome = await pollStation(db.pool, station);
+
+      expect(outcome).toEqual({
+        outcome: 'failure',
+        stationNaptanId: 'station-A',
+        errorMessage: 'connection pool exhausted',
+      });
+      // No poll_runs row can be written either, since the same exhausted pool can't hand out a
+      // client to record the failure — this is the expected degraded behavior, not a bug.
+      const rows = await db.pool.query('SELECT * FROM arrival_predictions');
+      expect(rows.rows).toHaveLength(0);
+    } finally {
+      connectSpy.mockRestore();
+    }
+  });
+
+  it('writes rows keyed by the polled station, not by a raw prediction\'s own (possibly different) naptanId (invariant: write/read key consistency)', async () => {
+    // TfL's raw payload for a prediction can, in principle, carry a naptanId that differs from
+    // the station actually queried (e.g. a platform-level code). The polled station's own id is
+    // the authoritative key, since getOpenPredictions() on the *next* poll always looks rows up
+    // by station.naptanId, not by whatever the payload said.
+    mockFetchArrivals.mockResolvedValue([
+      {
+        id: 'p1',
+        naptanId: 'platform-1a',
+        lineId: 'circle',
+        timeToStation: 60,
+        expectedArrival: '2026-08-09T12:10:00Z',
+      },
+    ]);
+
+    const outcome = await pollStation(db.pool, station);
+
+    expect(outcome).toMatchObject({ outcome: 'success', stationNaptanId: 'station-A' });
+    const rows = await db.pool.query('SELECT * FROM arrival_predictions');
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0].station_naptan_id).toBe('station-A');
+
+    const verifyClient = await db.pool.connect();
+    try {
+      const openRows = await actualDb.getOpenPredictions(verifyClient, 'station-A');
+      expect(openRows).toHaveLength(1);
+      expect(openRows[0].tflPredictionId).toBe('p1');
+    } finally {
+      verifyClient.release();
+    }
+  });
 });
 
 describe('runPollCycle — station independence (invariant 10)', () => {
@@ -196,8 +253,11 @@ describe('ingest against real captured TfL fixtures', () => {
     const second = await pollStation(db.pool, kingsCross);
     expect(second.outcome).toBe('success');
 
-    // The fixtures are real: 73 predictions per poll, 67 matched by id between them (verified
-    // separately), 5 of which shared an ambiguous id in one snapshot.
+    // The fixtures are real: 73 predictions per poll, 67 unique prediction ids per poll, all 67
+    // present in both polls with identical occurrence counts (0 unique to either poll). The
+    // 6-row-per-poll surplus (73 total - 67 unique) is duplicate-id groups: 4 groups of 2
+    // predictions sharing an id, plus 1 group of 3, totaling 5 groups covering 11 of the 73
+    // predictions (verified during final review).
     if (second.outcome === 'success') {
       expect(second.duplicateIdGroups).toBeGreaterThanOrEqual(1);
       expect(second.ambiguousPredictionPairs).toBeGreaterThanOrEqual(1);
