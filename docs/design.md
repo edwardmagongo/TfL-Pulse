@@ -32,8 +32,8 @@ implementation detail.
 
 I captured two real responses from the live TfL API (`/StopPoint/940GZZLUKSX/Arrivals`, King's
 Cross St Pancras), 15 seconds apart, 73 predictions each — committed as
-[`fixtures/kings-cross-arrivals-poll-1.json`](../../../fixtures/kings-cross-arrivals-poll-1.json)
-and [`fixtures/kings-cross-arrivals-poll-2.json`](../../../fixtures/kings-cross-arrivals-poll-2.json).
+[`fixtures/kings-cross-arrivals-poll-1.json`](../fixtures/kings-cross-arrivals-poll-1.json)
+and [`fixtures/kings-cross-arrivals-poll-2.json`](../fixtures/kings-cross-arrivals-poll-2.json).
 Findings:
 
 - **TfL's `id` field is stable across polls in the common case.** Each poll has 67 unique `id`
