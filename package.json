@@ -1,0 +1,28 @@
+{
+  "name": "tfl-pulse",
+  "version": "1.0.0",
+  "description": "Scheduled ingestion pipeline over TfL's live Arrivals API, deduplicating a noisy prediction feed into auditable lifecycle records in Postgres.",
+  "license": "MIT",
+  "private": false,
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "jest",
+    "type-check": "tsc --noEmit",
+    "poll": "ts-node scripts/poll.ts",
+    "report": "ts-node scripts/report.ts"
+  },
+  "dependencies": {
+    "pg": "^8.11.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^10.9.0",
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.20",
+    "@types/pg": "^8.11.6",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  }
+}
