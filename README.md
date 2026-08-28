@@ -273,10 +273,14 @@ state).
 
 ## Deployment
 
-GitHub Actions cron ([`.github/workflows/poll.yml`](.github/workflows/poll.yml)) runs
-`npm run poll` every ~5 minutes, with a concurrency guard so an overlapping run queues instead of
-racing the same database. GitHub Actions cron isn't sub-minute-precise, so this is periodic,
-idempotent ingestion, not real-time. The proof it's actually running is the repo's public
+[`.github/workflows/poll.yml`](.github/workflows/poll.yml) runs `npm run poll`, triggered every
+~5 minutes by an external cron service ([cron-job.org](https://cron-job.org)) calling GitHub's
+`workflow_dispatch` REST API — not GitHub Actions' own `schedule:` trigger. GitHub was observed
+silently deprioritizing `schedule`-triggered runs on this repo as pushes became less frequent
+(real cadence degraded from ~40 minutes to several hours between polls, despite a `*/5 * * * *`
+cron expression); `workflow_dispatch` isn't subject to that throttling. A concurrency guard still
+means an overlapping run queues instead of racing the same database. This is periodic, idempotent
+ingestion, not real-time. The proof it's actually running is the repo's public
 [Actions run history](https://github.com/edwardmagongo/TFL-Pulse/actions/workflows/poll.yml), not
 a claim here.
 

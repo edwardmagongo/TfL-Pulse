@@ -1,8 +1,10 @@
 name: Poll TfL Arrivals
 
+# Triggered externally (cron-job.org -> workflow_dispatch REST API) every ~5 minutes, not by
+# GitHub's own `schedule:` trigger — GitHub silently deprioritizes schedule-triggered runs on
+# repos with no recent pushes, which was observed degrading this pipeline's real cadence to
+# hours instead of minutes. workflow_dispatch isn't subject to that throttling.
 on:
-  schedule:
-    - cron: '*/5 * * * *'
   workflow_dispatch: {}
 
 jobs:

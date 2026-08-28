@@ -124,9 +124,13 @@ tfl-pulse/
   to introduce a new language for this scope.
 - **Storage:** Postgres, free-tier hosted (Neon). No ORM — the schema is one table, raw `pg` with
   parameterized queries is simpler and more honest than adding Prisma/TypeORM for this scope.
-- **Scheduling:** GitHub Actions cron, polling a small curated set of 6 stations (not all of
-  London — a deliberate, documented scope choice) every ~5 minutes. Each station is the specific
-  tube-only StopPoint ID, not the multi-mode "HUB" interchange ID — verified live, since
+- **Scheduling:** an external cron service (cron-job.org) calls GitHub's `workflow_dispatch` REST
+  API every ~5 minutes, which runs the poll workflow — not GitHub Actions' native `schedule:`
+  trigger, which was observed being silently deprioritized on this repo once pushes became
+  infrequent (real cadence degraded to hours between polls despite a `*/5 * * * *` cron
+  expression); `workflow_dispatch` isn't subject to that throttling. Polls a small curated set of
+  6 stations (not all of London — a deliberate, documented scope choice). Each station is the
+  specific tube-only StopPoint ID, not the multi-mode "HUB" interchange ID — verified live, since
   `/StopPoint/{hubId}/Arrivals` returns HTTP 200 with an empty array for a hub id (confirmed
   against HUBLST/HUBWAT/HUBVIC/HUBSRA before settling on the child tube StopPoint instead):
 
