@@ -10,6 +10,19 @@ async function main(): Promise<void> {
 
   const pool = new Pool({ connectionString });
   try {
+    const stationCount = await pool.query(
+      `SELECT count(DISTINCT station_naptan_id)::int AS count FROM poll_runs`,
+    );
+    const pollGaps = await pool.query(
+      `SELECT avg(extract(epoch FROM gap))::float AS mean_seconds
+       FROM (
+         SELECT polled_at - lag(polled_at) OVER (PARTITION BY station_naptan_id ORDER BY polled_at) AS gap
+         FROM poll_runs
+       ) gaps
+       WHERE gap IS NOT NULL`,
+    );
+    const meanGapMinutes = pollGaps.rows[0].mean_seconds != null ? pollGaps.rows[0].mean_seconds / 60 : null;
+
     const pollStats = await pool.query(
       `SELECT outcome, count(*)::int AS count FROM poll_runs GROUP BY outcome`,
     );
@@ -30,8 +43,10 @@ async function main(): Promise<void> {
       `SELECT coalesce(sum(ambiguous_prediction_pairs), 0)::int AS total FROM poll_runs WHERE outcome = 'success'`,
     );
 
-    console.log('Stations:                    6');
-    console.log('Poll frequency:              ~5 min');
+    console.log(`Stations:                    ${stationCount.rows[0].count}`);
+    console.log(
+      `Poll frequency (observed):   ${meanGapMinutes != null ? `~${meanGapMinutes.toFixed(1)} min (mean gap between polls)` : 'n/a (fewer than 2 polls recorded)'}`,
+    );
     console.log(`Successful polls:            ${pct(successCount)}% (${successCount}/${totalPolls})`);
     console.log(`Failed polls:                ${pct(failureCount)}% (${failureCount}/${totalPolls})`);
     console.log(`Predictions ingested:        ${predictionsIngested.rows[0].count}`);
