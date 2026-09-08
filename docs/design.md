@@ -245,6 +245,20 @@ not yet inserted).
 - **Database error mid-transaction:** the station's transaction rolls back entirely, logged as a
   failure in `poll_runs`, no partial state. This fails loud rather than fail-open — silently
   dropping a write would be worse than a visibly failed run that retries next poll.
+- **Dropped database connection:** the connection pool must have an `error` listener attached.
+  `pg`'s pool is an `EventEmitter` and emits `error` when a connected client's socket is dropped
+  server-side (a provider restart or maintenance window, observed in practice). An `error` emit
+  with no listener is an uncaught exception in Node, which kills the process on the spot — before
+  the per-station rollback and `poll_runs` recording above can run, and before the remaining
+  stations are polled. Handling it downgrades the drop to a logged event: the pool has already
+  evicted the dead client, so the next station gets a fresh one.
+- **Run exit status:** a run exits non-zero only when *every* station failed. A single station
+  failing is expected operational noise — TfL returns transient 503s for individual stations — and
+  it is already recorded in `poll_runs`, printed as `[fail]`, and reflected in the report's failure
+  rate. Failing the entire run on it would mean a red pipeline while five of six stations committed
+  normally, which trains the operator to ignore the signal. Every station failing is categorically
+  different: that points at the pipeline itself (database, credentials, network) rather than one
+  upstream endpoint.
 
 ## Correctness invariants
 

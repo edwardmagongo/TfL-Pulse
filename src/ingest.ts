@@ -101,3 +101,17 @@ export async function runPollCycle(pool: Pool, stations: Station[] = STATIONS): 
   }
   return outcomes;
 }
+
+/**
+ * A run counts as a failure only when every station failed. A single station failing — a transient
+ * TfL 503, say — is already recorded in poll_runs and surfaced in the report, so failing the whole
+ * run on it turns routine upstream noise into a red pipeline while the other five stations
+ * committed normally. Every station failing is different: that indicates the pipeline itself
+ * (database, network, credentials) is broken rather than one upstream endpoint.
+ *
+ * An empty list means nothing was polled, which is treated as not-a-failure rather than vacuously
+ * true, so an empty station list can never read as "all stations failed".
+ */
+export function isRunFailure(outcomes: PollOutcome[]): boolean {
+  return outcomes.length > 0 && outcomes.every((outcome) => outcome.outcome === 'failure');
+}

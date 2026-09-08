@@ -1,6 +1,12 @@
-import type { PoolClient } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 import { startTestDatabase, stopTestDatabase, TestDatabase } from './test-helpers/postgres';
-import { getOpenPredictions, applyDiff, recordPollSuccess, recordPollFailure } from './db';
+import {
+  getOpenPredictions,
+  applyDiff,
+  recordPollSuccess,
+  recordPollFailure,
+  attachPoolErrorHandler,
+} from './db';
 import type { NormalizedPrediction, PredictionDiff } from './types';
 
 describe('db', () => {
@@ -176,5 +182,54 @@ describe('db', () => {
         predictions_seen: null,
       });
     });
+  });
+});
+
+// Regression coverage for the production crash mode: pg's Pool is an EventEmitter, and pg-pool
+// emits 'error' on it whenever a connected client's socket drops (client.js's `end` handler ->
+// makeIdleListener -> pool.emit('error')). An 'error' emit with no listener makes Node throw an
+// uncaught exception, which killed the whole poll run before any station's failure could be
+// recorded. See the first test below for the unguarded behavior this exists to prevent.
+describe('attachPoolErrorHandler', () => {
+  it('an unguarded pool throws on a dropped-connection error event (the hazard being fixed)', async () => {
+    const pool = new Pool();
+    try {
+      expect(() => pool.emit('error', new Error('Connection terminated unexpectedly'))).toThrow(
+        'Connection terminated unexpectedly',
+      );
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('a guarded pool logs the dropped connection instead of throwing', async () => {
+    const pool = new Pool();
+    const log = jest.fn();
+    attachPoolErrorHandler(pool, log);
+
+    try {
+      const error = new Error('Connection terminated unexpectedly');
+      expect(() => pool.emit('error', error)).not.toThrow();
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log.mock.calls[0][1]).toBe(error);
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('stays attached across repeated drops, so a run survives more than one', async () => {
+    const pool = new Pool();
+    const log = jest.fn();
+    attachPoolErrorHandler(pool, log);
+
+    try {
+      expect(() => {
+        pool.emit('error', new Error('first drop'));
+        pool.emit('error', new Error('second drop'));
+      }).not.toThrow();
+      expect(log).toHaveBeenCalledTimes(2);
+    } finally {
+      await pool.end();
+    }
   });
 });

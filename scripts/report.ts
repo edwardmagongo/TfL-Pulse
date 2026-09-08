@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { attachPoolErrorHandler } from '../src/db';
 
 async function main(): Promise<void> {
   const connectionString = process.env.DATABASE_URL;
@@ -9,6 +10,7 @@ async function main(): Promise<void> {
   }
 
   const pool = new Pool({ connectionString });
+  attachPoolErrorHandler(pool);
   try {
     const stationCount = await pool.query(
       `SELECT count(DISTINCT station_naptan_id)::int AS count FROM poll_runs`,

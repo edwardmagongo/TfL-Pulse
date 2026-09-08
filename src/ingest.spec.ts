@@ -1,9 +1,10 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { startTestDatabase, stopTestDatabase, TestDatabase } from './test-helpers/postgres';
-import { pollStation, runPollCycle } from './ingest';
+import { pollStation, runPollCycle, isRunFailure } from './ingest';
 import * as tflClient from './tfl-client';
 import * as dbModule from './db';
+import type { PollOutcome } from './types';
 
 jest.mock('./tfl-client', () => ({
   ...jest.requireActual('./tfl-client'),
@@ -292,5 +293,45 @@ describe('ingest against real captured TfL fixtures', () => {
     const afterSecond = await db.pool.query('SELECT count(*)::int AS count FROM arrival_predictions');
 
     expect(afterSecond.rows[0].count).toBe(afterFirst.rows[0].count);
+  });
+});
+
+describe('isRunFailure — a run fails only when every station failed', () => {
+  const success = (naptanId: string): PollOutcome => ({
+    outcome: 'success',
+    stationNaptanId: naptanId,
+    predictionsSeen: 1,
+    duplicateIdGroups: 0,
+    ambiguousPredictionPairs: 0,
+  });
+  const failure = (naptanId: string): PollOutcome => ({
+    outcome: 'failure',
+    stationNaptanId: naptanId,
+    errorMessage: 'TfL API returned HTTP 503',
+  });
+
+  it('is a failure when every station failed', () => {
+    expect(isRunFailure([failure('station-A'), failure('station-B')])).toBe(true);
+  });
+
+  // The Mode B case observed in production: a single upstream 503 on one of six stations used to
+  // turn the whole run red, even though every other station committed normally and the failed
+  // station was correctly recorded in poll_runs.
+  it('is not a failure when only some stations failed', () => {
+    expect(isRunFailure([success('station-A'), failure('station-B'), success('station-C')])).toBe(false);
+  });
+
+  it('is not a failure when one of two stations failed', () => {
+    expect(isRunFailure([failure('station-A'), success('station-B')])).toBe(false);
+  });
+
+  it('is not a failure when every station succeeded', () => {
+    expect(isRunFailure([success('station-A'), success('station-B')])).toBe(false);
+  });
+
+  // Degenerate case: nothing was polled, so there is no failed station to report. Treated as
+  // not-a-failure rather than vacuously true, so an empty station list can't read as "all failed".
+  it('is not a failure when no stations were polled', () => {
+    expect(isRunFailure([])).toBe(false);
   });
 });

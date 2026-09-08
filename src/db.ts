@@ -1,4 +1,4 @@
-import type { PoolClient } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { OpenPredictionRow, PredictionDiff } from './types';
 
 export async function getOpenPredictions(
@@ -101,4 +101,23 @@ export async function recordPollFailure(
      VALUES ($1, $2, 'failure', $3)`,
     [stationNaptanId, polledAt, errorMessage],
   );
+}
+
+export type PoolErrorLogger = (message: string, error: Error) => void;
+
+/**
+ * pg's Pool is an EventEmitter, and pg-pool emits 'error' on it whenever a *connected* client's
+ * socket drops — including while that client sits idle between stations. Node throws an uncaught
+ * exception on an 'error' emit with no listener, so a database-side disconnect used to kill the
+ * whole poll run outright: the process died on the same tick, before pollStation()'s own catch
+ * could roll back, record the failure in poll_runs, or let the remaining stations run.
+ *
+ * Attaching a listener downgrades that to a logged event. pg-pool has already evicted the dead
+ * client by the time it emits, so the next station just gets a fresh one, and an in-flight query
+ * still rejects into pollStation()'s normal per-station failure path.
+ */
+export function attachPoolErrorHandler(pool: Pool, log: PoolErrorLogger = console.error): void {
+  pool.on('error', (error: Error) => {
+    log('[tfl-pulse] database connection dropped; pool evicted the client and will reconnect', error);
+  });
 }

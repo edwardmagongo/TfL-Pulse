@@ -28,7 +28,7 @@ guessing wrong, and automated tests that pin it down against real captured API d
 - **A failed poll can never resolve or modify anything.** One retry, then the station's open rows
   are left completely untouched — a transient network blip can never look like a wave of trains
   arriving. See [Error handling](#error-handling).
-- **36 automated tests** — unit tests for the matching/resolution logic, plus an integration test
+- **44 automated tests** — unit tests for the matching/resolution logic, plus an integration test
   against a real ephemeral Postgres (Testcontainers) run against the two real captured TfL
   fixtures, no live network calls anywhere in the suite. See [Tests](#tests).
 - **Runs on a real schedule, not just locally** — GitHub Actions cron every ~5 minutes, with a
@@ -178,6 +178,15 @@ reopening of the old one.
 - **Database error mid-transaction:** the station's transaction rolls back entirely and is
   recorded as a failure, no partial state — and stations never block each other, since each runs
   its own independent transaction.
+- **Dropped database connection:** `pg`'s pool emits an `error` event when a connected client's
+  socket is dropped by the server. That event is handled
+  ([`attachPoolErrorHandler`](src/db.ts)) so the drop is logged and the dead client evicted,
+  rather than terminating the process — an unhandled `error` event on an `EventEmitter` would
+  otherwise take down the whole run mid-flight, skipping the per-station handling above.
+- **Run exit status:** the run exits non-zero only when *every* station failed, which indicates
+  the pipeline itself is broken. One station failing (a transient TfL 503, say) is recorded in
+  `poll_runs` and printed as `[fail]`, but doesn't fail the run — the other stations committed
+  normally, and the failure rate is already visible in the report.
 
 ## Schema
 
@@ -221,7 +230,7 @@ keeps the lookup cheap as the table grows.
 
 ## Tests
 
-36 automated tests, 0 failures:
+44 automated tests, 0 failures:
 
 ```bash
 npm test

@@ -1,5 +1,6 @@
 import { Pool } from 'pg';
-import { runPollCycle } from '../src/ingest';
+import { runPollCycle, isRunFailure } from '../src/ingest';
+import { attachPoolErrorHandler } from '../src/db';
 
 async function main(): Promise<void> {
   const connectionString = process.env.DATABASE_URL;
@@ -10,9 +11,9 @@ async function main(): Promise<void> {
   }
 
   const pool = new Pool({ connectionString });
+  attachPoolErrorHandler(pool);
   try {
     const outcomes = await runPollCycle(pool);
-    let anyFailed = false;
     for (const outcome of outcomes) {
       if (outcome.outcome === 'success') {
         console.log(
@@ -20,11 +21,12 @@ async function main(): Promise<void> {
             `${outcome.duplicateIdGroups} duplicate-id groups`,
         );
       } else {
-        anyFailed = true;
         console.error(`[fail] ${outcome.stationNaptanId}: ${outcome.errorMessage}`);
       }
     }
-    process.exitCode = anyFailed ? 1 : 0;
+    // Partial failures still print [fail] above and are recorded in poll_runs; only a run in which
+    // every station failed exits non-zero. See isRunFailure().
+    process.exitCode = isRunFailure(outcomes) ? 1 : 0;
   } finally {
     await pool.end();
   }
