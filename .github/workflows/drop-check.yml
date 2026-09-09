@@ -7,6 +7,11 @@ name: Overnight DB Drop Check
 # Opens an issue only when there is something to say: a drop that was survived (the confirmation
 # we're waiting for), a drop that wasn't, or any failed run. A quiet night finishes silently.
 #
+# This is a time-boxed watch, not permanent monitoring: it exists to catch the handler firing once
+# in production. GitHub Actions has no native end date for a schedule, so the first step disables
+# this workflow through the API once EXPIRES_AFTER has passed. Re-enable it from the Actions tab
+# (or `gh workflow enable drop-check.yml`) and push a later date to extend the window.
+#
 # Note: GitHub deprioritizes `schedule:` runs on repos with infrequent pushes — the same throttling
 # that pushed poll.yml onto an external trigger. That's harmless here, because this inspects a
 # fixed past window rather than "now", so firing late still reads the same night. It can also be
@@ -17,7 +22,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  actions: read
+  actions: write # read the poll runs, and disable this workflow once the window ends
   issues: write
 
 jobs:
@@ -25,7 +30,31 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Retire the watch once its window has ended
+        id: window
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # Last night this watch covers. Fourteen nights from 2026-09-10, which at the observed
+          # rate of roughly one drop every eight nights is ~85% likely to catch one.
+          EXPIRES_AFTER: '2026-09-23'
+        run: |
+          set -uo pipefail
+          TODAY=$(date -u +%Y-%m-%d)
+          if [[ "$TODAY" > "$EXPIRES_AFTER" ]]; then
+            echo "expired=true" >> "$GITHUB_OUTPUT"
+            echo "Watch window ended after $EXPIRES_AFTER; disabling this workflow."
+            # If this fails the workflow stays enabled and keeps reporting, which is a far better
+            # failure than silently disabling a watch that was still meant to be running.
+            gh workflow disable drop-check.yml --repo "$REPO"
+            echo "Disabled. Re-enable from the Actions tab to resume."
+          else
+            echo "expired=false" >> "$GITHUB_OUTPUT"
+            echo "Watch active until end of $EXPIRES_AFTER (today is $TODAY)."
+          fi
+
       - name: Inspect overnight poll runs
+        if: steps.window.outputs.expired != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
