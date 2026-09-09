@@ -1,0 +1,134 @@
+name: Overnight DB Drop Check
+
+# Inspects the previous night's poll runs for the dropped-database-connection signature that used
+# to crash the pipeline outright (see attachPoolErrorHandler in src/db.ts). Those drops were
+# observed ~3 times in 25 days, always between 01:00 and 03:00 UTC.
+#
+# Opens an issue only when there is something to say: a drop that was survived (the confirmation
+# we're waiting for), a drop that wasn't, or any failed run. A quiet night finishes silently.
+#
+# Note: GitHub deprioritizes `schedule:` runs on repos with infrequent pushes — the same throttling
+# that pushed poll.yml onto an external trigger. That's harmless here, because this inspects a
+# fixed past window rather than "now", so firing late still reads the same night. It can also be
+# run by hand at any time.
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  actions: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Inspect overnight poll runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+
+          DAY=$(date -u +%Y-%m-%d)
+          FROM="${DAY}T00:00"
+          TO="${DAY}T04:00"
+          echo "Inspecting poll runs in [$FROM, $TO) UTC"
+
+          # An inability to look must never be reported as a clean night, so every failure to
+          # gather evidence below exits non-zero rather than falling through to "nothing found".
+          if ! gh api "repos/$REPO/actions/workflows/poll.yml/runs?per_page=100&created=$DAY" \
+                 --paginate \
+                 --jq '.workflow_runs[] | "\(.created_at) \(.conclusion) \(.id)"' > all.txt; then
+            echo "::error::Could not query the Actions API — nothing was verified tonight."
+            exit 1
+          fi
+
+          awk -v a="$FROM" -v b="$TO" '$1 >= a && $1 < b' all.txt > window.txt
+          COUNT=$(wc -l < window.txt | tr -d ' ')
+          echo "Runs in window: $COUNT"
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::No poll runs at all in the window — the pipeline may have stopped."
+            exit 1
+          fi
+
+          DROPS=""; OLDSIG=""; BADRUNS=""; UNREADABLE=0
+
+          # gh consumes stdin, which would eat the loop's input after one iteration; read the run
+          # list on fd 3 and give gh /dev/null instead.
+          while read -r created concl id <&3; do
+            log=$(gh run view "$id" --repo "$REPO" --log < /dev/null 2>/dev/null || true)
+            if [ -z "$log" ]; then
+              UNREADABLE=$((UNREADABLE + 1))
+              echo "warn: could not read log for run $id"
+              continue
+            fi
+            url="https://github.com/$REPO/actions/runs/$id"
+            if printf '%s' "$log" | grep -q "database connection dropped"; then
+              DROPS="${DROPS}- ${created} — conclusion \`${concl}\` — ${url}"$'\n'
+            fi
+            # The pre-fix crash signature. If this appears at all, the handler did not hold.
+            if printf '%s' "$log" | grep -q "Connection terminated unexpectedly"; then
+              OLDSIG="${OLDSIG}- ${created} — ${url}"$'\n'
+            fi
+            if [ "$concl" != "success" ]; then
+              BADRUNS="${BADRUNS}- ${created} — conclusion \`${concl}\` — ${url}"$'\n'
+            fi
+          done 3< window.txt
+
+          # A log we could not read is a run we did not check. Reporting a quiet night on the
+          # strength of logs we never saw would turn "we failed to look" into "all clear", so an
+          # incomplete sweep with no findings is an explicit failure, not a pass.
+          if [ "$UNREADABLE" -gt 0 ]; then
+            echo "::warning::$UNREADABLE of $COUNT run logs could not be read."
+            if [ -z "$DROPS" ] && [ -z "$OLDSIG" ] && [ -z "$BADRUNS" ]; then
+              echo "::error::Inconclusive — $UNREADABLE of $COUNT logs unreadable and nothing found in the rest. This is NOT a clean night."
+              exit 1
+            fi
+          fi
+
+          if [ -z "$DROPS" ] && [ -z "$OLDSIG" ] && [ -z "$BADRUNS" ]; then
+            echo "Quiet night: $COUNT runs, all succeeded, no connection drops. Nothing to report."
+            exit 0
+          fi
+
+          {
+            echo "Window \`[$FROM, $TO)\` UTC — $COUNT poll runs inspected."
+            echo
+            if [ -n "$OLDSIG" ]; then
+              echo "## The fix did NOT hold"
+              echo
+              echo "These runs logged \`Connection terminated unexpectedly\`, the pre-\`54554cb\`"
+              echo "crash signature. The pool error handler should have prevented this."
+              echo
+              printf '%s' "$OLDSIG"
+              echo
+            fi
+            if [ -n "$DROPS" ]; then
+              echo "## Connection drop detected"
+              echo
+              echo "\`attachPoolErrorHandler\` fired. Runs concluding \`success\` are the"
+              echo "confirmation that the fix works in production — the drop was absorbed and the"
+              echo "run completed. Any other conclusion means it was not."
+              echo
+              printf '%s' "$DROPS"
+              echo
+            fi
+            if [ -n "$BADRUNS" ]; then
+              echo "## Failed runs"
+              echo
+              printf '%s' "$BADRUNS"
+              echo
+            fi
+            if [ "$UNREADABLE" -gt 0 ]; then
+              echo "_Note: $UNREADABLE run log(s) could not be read, so this report may be incomplete._"
+            fi
+          } > body.md
+
+          cat body.md
+          gh issue create \
+            --repo "$REPO" \
+            --title "Overnight DB drop check — $DAY" \
+            --body-file body.md
