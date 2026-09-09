@@ -8,9 +8,10 @@ name: Overnight DB Drop Check
 # we're waiting for), a drop that wasn't, or any failed run. A quiet night finishes silently.
 #
 # This is a time-boxed watch, not permanent monitoring: it exists to catch the handler firing once
-# in production. GitHub Actions has no native end date for a schedule, so the first step disables
-# this workflow through the API once EXPIRES_AFTER has passed. Re-enable it from the Actions tab
-# (or `gh workflow enable drop-check.yml`) and push a later date to extend the window.
+# in production. It retires itself on whichever comes first — observing a connection drop, which is
+# the event it is waiting for, or passing EXPIRES_AFTER. GitHub Actions has no native end date for
+# a schedule, so both routes disable this workflow through the API. Re-enable it from the Actions
+# tab (or `gh workflow enable drop-check.yml`), pushing a later date if the window has passed.
 #
 # Note: GitHub deprioritizes `schedule:` runs on repos with infrequent pushes — the same throttling
 # that pushed poll.yml onto an external trigger. That's harmless here, because this inspects a
@@ -154,6 +155,17 @@ jobs:
             if [ "$UNREADABLE" -gt 0 ]; then
               echo "_Note: $UNREADABLE run log(s) could not be read, so this report may be incomplete._"
             fi
+            # A drop is the event this watch exists to observe, so seeing one ends the watch either
+            # way: the fix held or it didn't, and both are conclusive. Say so in the issue, so the
+            # reports stopping doesn't read as the check quietly breaking.
+            if [ -n "$DROPS" ] || [ -n "$OLDSIG" ]; then
+              echo
+              echo "---"
+              echo
+              echo "This watch has now seen what it was waiting for and has **disabled itself**."
+              echo "Re-enable it from the Actions tab (or \`gh workflow enable drop-check.yml\`)"
+              echo "to keep sampling — for instance to see whether drops recur after a fix."
+            fi
           } > body.md
 
           cat body.md
@@ -161,3 +173,11 @@ jobs:
             --repo "$REPO" \
             --title "Overnight DB drop check — $DAY" \
             --body-file body.md
+
+          # Failed runs alone don't retire the watch: a run can fail for reasons that have nothing
+          # to do with a connection drop (a TfL-wide outage failing every station, say), and the
+          # drop is still the thing being waited for.
+          if [ -n "$DROPS" ] || [ -n "$OLDSIG" ]; then
+            echo "Connection drop observed — the watch has served its purpose; disabling."
+            gh workflow disable drop-check.yml --repo "$REPO"
+          fi
