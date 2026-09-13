@@ -5,6 +5,7 @@ import { pollStation, runPollCycle, isRunFailure } from './ingest';
 import * as tflClient from './tfl-client';
 import * as dbModule from './db';
 import type { PollOutcome } from './types';
+import { Pool, type PoolClient } from 'pg';
 
 jest.mock('./tfl-client', () => ({
   ...jest.requireActual('./tfl-client'),
@@ -333,5 +334,73 @@ describe('isRunFailure — a run fails only when every station failed', () => {
   // not-a-failure rather than vacuously true, so an empty station list can't read as "all failed".
   it('is not a failure when no stations were polled', () => {
     expect(isRunFailure([])).toBe(false);
+  });
+});
+
+describe('pollStation — connection dropped while the client is checked out', () => {
+  let db: TestDatabase;
+
+  beforeAll(async () => {
+    db = await startTestDatabase();
+  });
+
+  afterAll(async () => {
+    await stopTestDatabase(db);
+  });
+
+  beforeEach(async () => {
+    await db.pool.query('TRUNCATE arrival_predictions, poll_runs');
+    mockFetchArrivals.mockReset();
+    mockGetOpenPredictions.mockReset().mockImplementation(actualDb.getOpenPredictions);
+    mockRecordPollFailure.mockReset().mockImplementation(actualDb.recordPollFailure);
+  });
+
+  // pg-pool removes a client's 'error' listener for exactly the window in which it is checked out
+  // (pg-pool/index.js, _acquireClient), so the pool-level handler covers idle clients only. A
+  // socket dropped while a client is held — and while no query is in flight to reject — emits
+  // 'error' on a Client with no listeners, which Node turns into an uncaught exception that kills
+  // the whole run. That is the production crash this guards against: without the guard this test
+  // does not fail, it takes the test process down with it.
+  it('resolves a failure outcome rather than crashing the process (invariant 10)', async () => {
+    mockFetchArrivals.mockResolvedValue([
+      { id: 'p1', naptanId: 'station-A', lineId: 'circle', timeToStation: 60, expectedArrival: '2026-08-09T12:10:00Z' },
+    ]);
+
+    // Kill this client's own backend, from a separate connection, while it is checked out and
+    // idle mid-transaction. Targeting the one pid keeps the blast radius off the shared test pool.
+    mockGetOpenPredictions.mockImplementationOnce(async (client: PoolClient) => {
+      const { rows } = await client.query('SELECT pg_backend_pid() AS pid');
+      const killer = new Pool({ connectionString: db.container.getConnectionUri() });
+      await killer.query('SELECT pg_terminate_backend($1)', [rows[0].pid]);
+      await killer.end();
+      // Let the socket error land while nothing is in flight — the unguarded window.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return [];
+    });
+
+    const outcome = await pollStation(db.pool, station);
+
+    expect(outcome.outcome).toBe('failure');
+    expect(outcome.stationNaptanId).toBe('station-A');
+  });
+
+  it('the pool stays usable for the next station after a client died while checked out', async () => {
+    mockFetchArrivals.mockResolvedValue([
+      { id: 'p2', naptanId: 'station-A', lineId: 'circle', timeToStation: 60, expectedArrival: '2026-08-09T12:10:00Z' },
+    ]);
+    mockGetOpenPredictions.mockImplementationOnce(async (client: PoolClient) => {
+      const { rows } = await client.query('SELECT pg_backend_pid() AS pid');
+      const killer = new Pool({ connectionString: db.container.getConnectionUri() });
+      await killer.query('SELECT pg_terminate_backend($1)', [rows[0].pid]);
+      await killer.end();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return [];
+    });
+
+    expect((await pollStation(db.pool, station)).outcome).toBe('failure');
+
+    // A dead client must not be handed back to the pool for the next station to pick up.
+    const next = await pollStation(db.pool, station);
+    expect(next.outcome).toBe('success');
   });
 });

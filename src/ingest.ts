@@ -2,7 +2,13 @@ import type { Pool } from 'pg';
 import { fetchArrivals, STATIONS } from './tfl-client';
 import { normalize } from './normalize';
 import { computeDiff } from './matcher';
-import { getOpenPredictions, applyDiff, recordPollSuccess, recordPollFailure } from './db';
+import {
+  getOpenPredictions,
+  applyDiff,
+  recordPollSuccess,
+  recordPollFailure,
+  acquireClient,
+} from './db';
 import type { PollOutcome, Station } from './types';
 
 export async function pollStation(pool: Pool, station: Station): Promise<PollOutcome> {
@@ -13,9 +19,9 @@ export async function pollStation(pool: Pool, station: Station): Promise<PollOut
     raw = await fetchArrivals(station.naptanId);
   } catch (error) {
     const errorMessage = (error as Error).message;
-    let client;
+    let held;
     try {
-      client = await pool.connect();
+      held = await acquireClient(pool, station.naptanId);
     } catch (connectError) {
       console.error(
         `[tfl-pulse] ${station.naptanId}: failed to acquire a client to record poll failure after original fetch error "${errorMessage}"`,
@@ -24,14 +30,14 @@ export async function pollStation(pool: Pool, station: Station): Promise<PollOut
       return { outcome: 'failure', stationNaptanId: station.naptanId, errorMessage };
     }
     try {
-      await recordPollFailure(client, station.naptanId, errorMessage, pollTimestamp);
+      await recordPollFailure(held.client, station.naptanId, errorMessage, pollTimestamp);
     } catch (secondaryError) {
       console.error(
         `[tfl-pulse] ${station.naptanId}: failed to record poll failure after original fetch error "${errorMessage}"`,
         secondaryError,
       );
     } finally {
-      client.release();
+      held.release();
     }
     return { outcome: 'failure', stationNaptanId: station.naptanId, errorMessage };
   }
@@ -48,14 +54,15 @@ export async function pollStation(pool: Pool, station: Station): Promise<PollOut
     prediction.stationNaptanId = station.naptanId;
   }
 
-  let client;
+  let held;
   try {
-    client = await pool.connect();
+    held = await acquireClient(pool, station.naptanId);
   } catch (connectError) {
     const errorMessage = (connectError as Error).message;
     console.error(`[tfl-pulse] ${station.naptanId}: failed to acquire a client for polling`, connectError);
     return { outcome: 'failure', stationNaptanId: station.naptanId, errorMessage };
   }
+  const { client } = held;
   try {
     await client.query('BEGIN');
     const openRows = await getOpenPredictions(client, station.naptanId);
@@ -90,7 +97,7 @@ export async function pollStation(pool: Pool, station: Station): Promise<PollOut
     }
     return { outcome: 'failure', stationNaptanId: station.naptanId, errorMessage };
   } finally {
-    client.release();
+    held.release();
   }
 }
 

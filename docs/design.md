@@ -245,13 +245,25 @@ not yet inserted).
 - **Database error mid-transaction:** the station's transaction rolls back entirely, logged as a
   failure in `poll_runs`, no partial state. This fails loud rather than fail-open — silently
   dropping a write would be worse than a visibly failed run that retries next poll.
-- **Dropped database connection:** the connection pool must have an `error` listener attached.
-  `pg`'s pool is an `EventEmitter` and emits `error` when a connected client's socket is dropped
-  server-side (a provider restart or maintenance window, observed in practice). An `error` emit
-  with no listener is an uncaught exception in Node, which kills the process on the spot — before
-  the per-station rollback and `poll_runs` recording above can run, and before the remaining
-  stations are polled. Handling it downgrades the drop to a logged event: the pool has already
-  evicted the dead client, so the next station gets a fresh one.
+- **Dropped database connection:** every client must have an `error` listener for its whole
+  lifetime, in both of the states it can be in. Sockets do get dropped server-side in practice — a
+  provider restart or maintenance window — and in `pg` an `error` emit with no listener is an
+  uncaught exception, which kills the process on the spot: before the per-station rollback and
+  `poll_runs` recording above can run, and before the remaining stations are polled.
+
+  The two states are not covered by the same listener, which is easy to get wrong:
+
+  1. **Idle in the pool.** pg-pool's own idle listener forwards the error to the pool, so a
+     listener on the pool covers it and the dead client is evicted.
+  2. **Checked out.** pg-pool *removes* the client's error listener while it is held, assuming the
+     in-flight query will reject instead. When the socket dies with no query in flight — between
+     statements of the transaction, or while the caller is doing CPU work such as `computeDiff` —
+     there is nothing to reject and nothing listening. This window needs its own listener attached
+     at checkout, and the dead client must be discarded on release rather than handed back to the
+     pool for the next station.
+
+  Covering only the first case looks correct and passes a test that drops an idle connection,
+  while leaving the crash that actually happens in production fully intact.
 - **Run exit status:** a run exits non-zero only when *every* station failed. A single station
   failing is expected operational noise — TfL returns transient 503s for individual stations — and
   it is already recorded in `poll_runs`, printed as `[fail]`, and reflected in the report's failure

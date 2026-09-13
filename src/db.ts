@@ -121,3 +121,48 @@ export function attachPoolErrorHandler(pool: Pool, log: PoolErrorLogger = consol
     log('[tfl-pulse] database connection dropped; pool evicted the client and will reconnect', error);
   });
 }
+
+export interface HeldClient {
+  client: PoolClient;
+  /** Returns the client to the pool, discarding it if its connection died while held. */
+  release: () => void;
+}
+
+/**
+ * Checks a client out of the pool with an 'error' listener attached for as long as it is held.
+ *
+ * pg-pool removes a client's own 'error' listener for exactly the window in which it is checked
+ * out (see _acquireClient in pg-pool), on the assumption that errors will surface through the
+ * query in flight. When the socket dies with no query in flight — between statements of a
+ * transaction, or while the caller is doing CPU work such as computeDiff — there is nothing to
+ * reject, so pg emits 'error' on a Client with no listeners and Node turns that into an uncaught
+ * exception that kills the process. attachPoolErrorHandler() cannot help: the pool-level event
+ * fires only for idle clients, and this client is not idle.
+ *
+ * With a listener attached the drop is logged instead, and the next query on the dead client
+ * rejects normally, so it reaches the caller's existing error handling as an ordinary failure.
+ */
+export async function acquireClient(
+  pool: Pool,
+  label: string,
+  log: PoolErrorLogger = console.error,
+): Promise<HeldClient> {
+  const client = await pool.connect();
+  let connectionError: Error | undefined;
+
+  const onError = (error: Error) => {
+    connectionError = error;
+    log(`[tfl-pulse] ${label}: database connection dropped while the client was checked out`, error);
+  };
+  client.on('error', onError);
+
+  return {
+    client,
+    release: () => {
+      client.removeListener('error', onError);
+      // Handing the error to release() tells pg-pool to destroy this client rather than return a
+      // dead connection to the pool for the next caller to pick up.
+      client.release(connectionError);
+    },
+  };
+}
