@@ -36,9 +36,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          # Last night this watch covers. Fourteen nights from 2026-09-10, which at the observed
-          # rate of roughly one drop every eight nights is ~85% likely to catch one.
-          EXPIRES_AFTER: '2026-09-23'
+          # Last night this watch covers. Pushed out two weeks from the original 2026-09-23,
+          # because polling was paused on 2026-09-19 while a database quota was sorted out and the
+          # watch observes nothing while there are no runs to inspect. The question it exists to
+          # answer — whether the checked-out-client guard added in 22efee2 survives a real drop —
+          # is still open, and needs nights with actual traffic to answer.
+          EXPIRES_AFTER: '2026-10-07'
         run: |
           set -uo pipefail
           TODAY=$(date -u +%Y-%m-%d)
