@@ -57,7 +57,7 @@ TypeScript · Node.js · PostgreSQL (Neon) · Jest · Testcontainers · GitHub A
 
 ## Running it
 
-Requires Node.js 20+ and Docker (Testcontainers starts its own throwaway Postgres for the tests).
+Requires Node.js 24+ and Docker (Testcontainers starts its own throwaway Postgres for the tests).
 
 ```bash
 npm install

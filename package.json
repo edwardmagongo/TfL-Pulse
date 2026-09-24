@@ -4,7 +4,7 @@
   "description": "Scheduled ingestion pipeline over TfL's live Arrivals API, deduplicating a noisy prediction feed into auditable lifecycle records in Postgres.",
   "license": "MIT",
   "private": false,
-  "engines": { "node": ">=20" },
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "jest",
     "type-check": "tsc --noEmit",
@@ -18,7 +18,7 @@
   "devDependencies": {
     "@testcontainers/postgresql": "^10.9.0",
     "@types/jest": "^29.5.12",
-    "@types/node": "^20.11.20",
+    "@types/node": "^24.13.6",
     "@types/pg": "^8.11.6",
     "jest": "^29.7.0",
     "ts-jest": "^29.1.2",
